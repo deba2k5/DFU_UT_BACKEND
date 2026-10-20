@@ -1,0 +1,10 @@
+# torch / torchvision: install the CPU build first (see Dockerfile / README)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+python-multipart>=0.0.9
+timm>=1.0
+pillow>=10.0
+numpy>=1.26
+opencv-python-headless>=4.9
+grad-cam>=1.5
+anthropic>=1.0

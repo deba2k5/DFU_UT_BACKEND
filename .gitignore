@@ -1,0 +1,14 @@
+# Patient data: database, photos, heatmaps. Never commit.
+data/
+
+# Secrets and local files
+.env
+*.log
+server_log.txt
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/

@@ -1,0 +1,10 @@
+data/
+.env
+*.log
+server_log.txt
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.git/
+tests/
