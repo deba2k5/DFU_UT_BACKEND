@@ -1,6 +1,12 @@
-"""SQLite storage for doctors, sessions, patients and scans (data/app.db + data/images/)."""
+"""SQLite storage for doctors, patients and scans (data/app.db + data/images/).
+
+Login tokens are signed (HMAC) rather than stored, so they stay valid across server
+instances and restarts as long as SECRET_KEY is the same."""
+import base64
 import hashlib
+import hmac
 import json
+import logging
 import os
 import secrets
 import sqlite3
@@ -8,7 +14,9 @@ import threading
 import time
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DATA_DIR = os.getenv("DATA_DIR", os.path.join(HERE, "data"))
+ON_SERVERLESS = bool(os.getenv("VERCEL") or os.getenv("AWS_LAMBDA_FUNCTION_NAME"))
+# Serverless file systems are read-only except /tmp (and /tmp is wiped between instances).
+DATA_DIR = os.getenv("DATA_DIR", "/tmp/dfu-data" if ON_SERVERLESS else os.path.join(HERE, "data"))
 IMG_DIR = os.path.join(DATA_DIR, "images")
 DB_PATH = os.path.join(DATA_DIR, "app.db")
 SESSION_DAYS = 7
@@ -75,24 +83,54 @@ def public_user(u):
     return {k: u[k] for k in ("id", "email", "name", "role", "hospital", "phone")} if u else None
 
 
+def _secret() -> bytes:
+    """SECRET_KEY env var; otherwise a random key kept in DATA_DIR (fine for one server)."""
+    if os.getenv("SECRET_KEY"):
+        return os.environ["SECRET_KEY"].encode()
+    if ON_SERVERLESS:
+        logging.getLogger("db").warning("SECRET_KEY not set: logins will not survive across instances")
+    path = os.path.join(DATA_DIR, ".secret_key")
+    if not os.path.exists(path):
+        with open(path, "w") as f:
+            f.write(secrets.token_hex(32))
+    with open(path) as f:
+        return f.read().strip().encode()
+
+
+_SECRET = _secret()
+
+
+def _b64(b: bytes) -> str:
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def _sign(payload: str) -> str:
+    return _b64(hmac.new(_SECRET, payload.encode(), hashlib.sha256).digest())
+
+
 def login(email: str, password: str):
     u = _q("SELECT * FROM users WHERE email=?", (email.lower().strip(),), one=True)
     if not u or not secrets.compare_digest(u["pw_hash"], _hash(password, u["pw_salt"])):
         return None
-    token = secrets.token_urlsafe(32)
-    _q("INSERT INTO sessions(token,user_id,expires_ms) VALUES(?,?,?)",
-       (token, u["id"], now_ms() + SESSION_DAYS * 86_400_000), commit=True)
-    return token, public_user(u)
+    payload = _b64(json.dumps({"e": u["email"], "x": now_ms() + SESSION_DAYS * 86_400_000}).encode())
+    return f"{payload}.{_sign(payload)}", public_user(u)
 
 
 def user_for_token(token: str):
-    u = _q("SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token=? AND s.expires_ms>?",
-           (token, now_ms()), one=True)
-    return public_user(u)
+    payload, _, sig = token.partition(".")
+    if not payload or not sig or not hmac.compare_digest(sig, _sign(payload)):
+        return None
+    try:
+        data = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+    except ValueError:
+        return None
+    if data.get("x", 0) < now_ms():
+        return None
+    return public_user(_q("SELECT * FROM users WHERE email=?", (data.get("e", ""),), one=True))
 
 
 def logout(token: str):
-    _q("DELETE FROM sessions WHERE token=?", (token,), commit=True)
+    """Signed tokens are stateless: the app forgets the token; it expires after SESSION_DAYS."""
 
 
 def update_user(uid: int, **fields):

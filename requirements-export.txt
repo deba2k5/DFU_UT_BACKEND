@@ -1,0 +1,7 @@
+# Only for tools/export_onnx.py (run on your PC, not on the server).
+# Install the CPU build of torch first:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+timm>=1.0
+onnx>=1.16
+onnxruntime>=1.18
+numpy>=1.26

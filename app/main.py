@@ -25,14 +25,14 @@ def _model_path() -> str:
     p = os.getenv("MODEL_PATH")
     if p:
         return p
-    found = sorted(glob.glob(os.path.join(HERE, "weights", "*.pth")), key=os.path.getmtime)
+    found = sorted(glob.glob(os.path.join(HERE, "weights", "*.onnx")), key=os.path.getmtime)
     if not found:
-        raise RuntimeError("no .pth in backend/weights - copy your trained model there")
-    return found[-1]                                   # newest checkpoint wins
+        raise RuntimeError("no .onnx in backend/weights - run: python -m tools.export_onnx <model.pth>")
+    return found[-1]                                   # newest model wins
 
 
 MODEL_PATH = _model_path()
-clf = Classifier(MODEL_PATH, threads=int(os.getenv("TORCH_THREADS", "2")))
+clf = Classifier(MODEL_PATH, threads=int(os.getenv("MODEL_THREADS", os.getenv("TORCH_THREADS", "2"))))
 clf.warmup()                                           # so the first real request isn't slow
 orch = Orchestrator(default_steps(clf))
 db.seed_default_user()
@@ -163,7 +163,7 @@ async def analyze(image: UploadFile = File(...),
                   foot_side: str = Form(""),
                   lang: str = Form("en"),
                   pulses_palpable: str = Form("unknown"),
-                  explain: bool = Form(True),
+                  explain: str = Form("true"),   # str: newer FastAPI turns a missing bool form field into False
                   user=Depends(current_user)):
     data = await image.read()
     if not data:
@@ -174,7 +174,8 @@ async def analyze(image: UploadFile = File(...),
         raise HTTPException(422, "pulses_palpable must be yes, no or unknown")
     if patient_id is not None and not db.get_patient(patient_id):
         raise HTTPException(404, "patient not found")
-    out = await orch.run(data, lang=lang, pulses=pulses_palpable, explain=explain)
+    out = await orch.run(data, lang=lang, pulses=pulses_palpable,
+                         explain=explain.strip().lower() not in ("false", "0", "no", "off"))
     out["scan"] = None
     if patient_id is not None and out["status"] == "ok":
         out["scan"] = db.save_scan(patient_id, user["id"], out, data, out["heatmap_jpeg"],

@@ -2,11 +2,12 @@
 
 Critical steps stop the case on failure; optional steps degrade gracefully."""
 import asyncio
+import io
 import time
 from dataclasses import dataclass, field
 
-import cv2
 import numpy as np
+from PIL import Image
 
 from app.report import write_report
 
@@ -28,7 +29,8 @@ class Case:
     heatmap_jpeg: str = ""
     report: str = ""
     timings_ms: dict = field(default_factory=dict)
-    x: object = None                        # model input tensor
+    x: object = None                        # model input array
+    cams: object = None                     # class activation maps from the classifier
 
 
 class Orchestrator:
@@ -60,12 +62,16 @@ class Orchestrator:
 
 def default_steps(clf):
     async def quality(c: Case):
-        g = cv2.imdecode(np.frombuffer(c.image, np.uint8), cv2.IMREAD_GRAYSCALE)
-        if g is None:
+        try:
+            img = Image.open(io.BytesIO(c.image)).convert("L")
+        except Exception:                    # noqa: BLE001 - any decode failure = unreadable
             c.status, c.message = "rejected", "The file is not a readable image."
             c.flags.append("unreadable_image"); return
-        g = cv2.resize(g, (512, max(1, int(512 * g.shape[0] / g.shape[1]))))
-        sharp, bright = float(cv2.Laplacian(g, cv2.CV_64F).var()), float(g.mean())
+        img = img.resize((512, max(1, round(512 * img.height / img.width))), Image.BILINEAR)
+        g = np.asarray(img, np.float64)
+        # 4-neighbour Laplacian (same kernel as cv2.Laplacian with ksize=1)
+        lap = g[:-2, 1:-1] + g[2:, 1:-1] + g[1:-1, :-2] + g[1:-1, 2:] - 4 * g[1:-1, 1:-1]
+        sharp, bright = float(lap.var()), float(g.mean())
         c.quality = {"sharpness": round(sharp, 1), "brightness": round(bright, 1)}
         if sharp < MIN_SHARPNESS:
             c.status, c.message = "retake", "Photo looks blurry. Hold the phone steady and tap to focus."
@@ -79,10 +85,10 @@ def default_steps(clf):
 
     async def classify(c: Case):
         c.x = clf.tensor(c.image)
-        c.result = await asyncio.to_thread(clf.predict, c.x)
+        c.result, c.cams = await asyncio.to_thread(clf.predict, c.x)
 
     async def explain(c: Case):
-        c.heatmap_jpeg = await asyncio.to_thread(clf.gradcam_jpeg, c.x, c.result["grade"]["value"])
+        c.heatmap_jpeg = await asyncio.to_thread(clf.cam_jpeg, c.x, c.cams, c.result["grade"]["value"])
 
     async def triage(c: Case):
         r = c.result

@@ -1,0 +1,10 @@
+data/
+tests/
+tools/
+weights/*.pth
+requirements-export.txt
+Dockerfile
+.dockerignore
+*.log
+server_log.txt
+__pycache__/
